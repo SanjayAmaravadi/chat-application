@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Advanced Real-Time Chat</title>
+        <!-- Bootstrap -->
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+        <!-- Bootstrap Icons -->
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/font/bootstrap-icons.min.css">
+        <!-- Custom CSS -->
+        <link rel="stylesheet" th:href="@{/css/style.css}">
+        <!-- SockJS -->
+        <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+        <!-- STOMPJS -->
+        <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.2.0/bundles/stomp.umd.min.js"></script>
+    </head>
+    <body>
+        <div class="container chat-container">
+            <div class="chat-card">
+                <!-- Header -->
+                <div class="chat-header text-center">
+                    <h2 class="fw-bold">
+                        <i class="bi bi-chat-dots-fill"></i>Advanced Real-Time Chat
+                    </h2>
+                    <p class="text-secondary">Spring Boot + WebSocket + STOMP</p>
+                    <!-- Typing Indicator -->
+                    <div id="typingIndicator" class="text-warning small"></div>
+                </div>
+
+                <!-- Chat Box -->
+                <div id="chat" class="chat-box">
+
+                    <!-- Old Messages From Database -->
+                    <div th:each="message : ${messages}">
+
+                        <!-- Join Messages -->
+                        <div th:if="${message.type != null and message.type.name() == 'JOIN'}" class="system-message">
+                            <span th:text="${message.content}"></span>
+                        </div>
+
+                        <!-- Normal Chat Messages -->
+                        <div th:unless="${message.type != null and message.type.name() == 'JOIN'}" class="message">
+                            <div class="d-flex align-items-center gap-2 mb-1">
+                                <!-- Avatar -->
+                                <div class="avatar-circle"
+                                     th:text="${#strings.substring(message.sender,0,1).toUpperCase()}">
+                                </div>
+                                <!-- Sender -->
+                                <strong th:text="${message.sender}"></strong>
+                                <!-- Timestamp -->
+                                <small class="text-secondary" th:text="${message.timestamp != null ? #temporals.format(message.timestamp,'HH:mm') : ''}"> </small>
+                            </div>
+
+                            <!-- Message Content -->
+                            <div class="message-content" th:text="${message.content}"> </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Input Area -->
+                <div class="p-3 border-top">
+
+                    <!-- Username -->
+                    <div class="mb-3">
+                        <input id="senderInput" type="text" class="form-control custom-input" placeholder="Enter your name...">
+                    </div>
+
+                    <!-- Message Input -->
+                    <div class="input-group">
+                        <input id="messageInput" type="text" class="form-control custom-input" placeholder="Type your message...">
+                        <button id="sendMessage" class="btn btn-primary send-btn">
+                            <i class="bi bi-send-fill"></i> Send
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    <script>
+let stompClient = null;
+let usernameLocked = false;
+
+// Connect WebSocket
+function connect() {
+    const socket = new SockJS('/chat');
+    stompClient = new StompJs.Client({
+        webSocketFactory: () => socket,
+        reconnectDelay: 5000,
+        onConnect: () => {
+            console.log("Connected");
+            // Subscribe Messages
+            stompClient.subscribe('/topic/messages', (message) => {
+                showMessage(JSON.parse(message.body));
+            });
+            // Subscribe Typing
+            stompClient.subscribe('/topic/typing', (message) => {
+                const typingMessage = JSON.parse(message.body);
+                const indicator = document.getElementById('typingIndicator');
+                indicator.textContent = `${typingMessage.sender} is typing...`;
+                setTimeout(() => {
+                    indicator.textContent = '';
+                }, 1500);
+            });
+        },
+        onStompError: (frame) => {
+            console.error(frame);
+        }
+    });
+    stompClient.activate();
+}
+
+// Show Message
+function showMessage(message) {
+    const chat = document.getElementById('chat');
+    const messageElement = document.createElement('div');
+    // Join Message
+    if (message.type === 'JOIN') {
+        messageElement.className = 'system-message';
+        messageElement.innerHTML = `<span>${message.content}</span>`;
+    }
+    // Normal Message
+    else {
+        let time = '';
+        if (message.timestamp) {
+            const date = new Date(message.timestamp);
+            time = date.toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+        const firstLetter =
+            message.sender.charAt(0).toUpperCase();
+        messageElement.className = 'message';
+        messageElement.innerHTML = `
+            <div class="d-flex align-items-center gap-2 mb-1">
+                <div class="avatar-circle">${firstLetter}</div>
+                <strong>${message.sender}</strong>
+                <small class="text-secondary">${time}</small>
+            </div>
+            <div class="message-content">${message.content}</div>
+        `;
+    }
+    chat.appendChild(messageElement);
+    // Auto Scroll
+    chat.scrollTop = chat.scrollHeight;
+}
+
+// Send Message
+function sendMessage() {
+    const senderInput = document.getElementById('senderInput');
+    const messageInput = document.getElementById('messageInput');
+    const sender = senderInput.value.trim();
+    const content = messageInput.value.trim();
+    // Validation
+    if (sender === '' || content === '') {return;}
+
+    // Lock Username
+    if (!usernameLocked) {
+        senderInput.readOnly = true;
+        senderInput.classList.add('opacity-75');
+        usernameLocked = true;
+    }
+
+    // Create Message Object
+    const chatMessage = {
+        sender: sender,
+        content: content
+    };
+
+    // Send Message
+    stompClient.publish({destination: '/app/sendMessage', body: JSON.stringify(chatMessage)});
+
+    // Clear Input
+    messageInput.value = '';
+}
+
+// Typing Event
+function sendTyping() {
+    const sender = document.getElementById('senderInput').value.trim();
+    if (sender === '') {return;}
+
+    stompClient.publish({
+        destination: '/app/typing',
+        body: JSON.stringify({
+            sender: sender,
+            content: 'typing...'
+        })
+    });
+}
+
+// Button Click
+document.getElementById('sendMessage').onclick = sendMessage;
+
+// Enter Key Support
+document.getElementById('messageInput').addEventListener('keypress', function (event) {
+        sendTyping();
+        if (event.key === 'Enter') {sendMessage();}
+    });
+
+// Auto Connect
+window.onload = connect;
+    </script>
+    </body>
+</html>
